@@ -27,6 +27,110 @@ RGB_MATRIX = (
     (0.0557, -0.2040, 1.0570),
 )
 
+COLOR_MODES = ('truecolor', '256', '16')
+ANSI16_RGB = (
+    (0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0),
+    (0, 0, 238), (205, 0, 205), (0, 205, 205), (229, 229, 229),
+    (127, 127, 127), (255, 0, 0), (0, 255, 0), (255, 255, 0),
+    (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+)
+CUBE_LEVELS = (0, 95, 135, 175, 215, 255)
+
+
+def detect_color_mode(env=None) -> str:
+    """Return the color mode the terminal can show: 'truecolor', '256' or '16'.
+
+    GNU screen 4.x (the one shipped by Ubuntu) can not show 24-bit colors, but
+    it inherits COLORTERM=truecolor from the outer terminal, so inside screen
+    (or with a screen* TERM, which tmux also uses) the 256-color palette is
+    used. ROSMON2_COLORS=truecolor|256|16 overrides the detection.
+    """
+    env = os.environ if env is None else env
+    forced = env.get('ROSMON2_COLORS', '').strip().lower()
+    if forced in COLOR_MODES:
+        return forced
+    term = env.get('TERM', '')
+    inside_screen = bool(env.get('STY')) or term.startswith('screen')
+    if env.get('COLORTERM', '').lower() in ('truecolor', '24bit') and not inside_screen:
+        return 'truecolor'
+    if '256' in term or inside_screen or env.get('COLORTERM'):
+        return '256'
+    return '16'
+
+
+def _distance(first, second) -> int:
+    return sum((a - b) ** 2 for a, b in zip(first, second))
+
+
+def _rgb_to_256(red: int, green: int, blue: int) -> int:
+    """Return the nearest xterm 256-color index (6x6x6 cube or gray ramp)."""
+    rgb = (red, green, blue)
+    levels = [min(range(6), key=lambda i: abs(CUBE_LEVELS[i] - value)) for value in rgb]
+    cube_index = 16 + 36 * levels[0] + 6 * levels[1] + levels[2]
+    cube_rgb = tuple(CUBE_LEVELS[level] for level in levels)
+    gray_step = min(23, max(0, round((sum(rgb) / 3 - 8) / 10)))
+    gray = 8 + 10 * gray_step
+    if _distance((gray, gray, gray), rgb) < _distance(cube_rgb, rgb):
+        return 232 + gray_step
+    return cube_index
+
+
+def _rgb_to_16(red: int, green: int, blue: int) -> int:
+    """Return the index (0-15) of the nearest basic ANSI color."""
+    rgb = (red, green, blue)
+    return min(range(16), key=lambda i: _distance(ANSI16_RGB[i], rgb))
+
+
+def _color(kind: int, red: int, green: int, blue: int, mode: Optional[str]) -> str:
+    mode = mode or COLOR_MODE
+    if mode == 'truecolor':
+        return f'\x1b[{kind};2;{red};{green};{blue}m'
+    if mode == '256':
+        return f'\x1b[{kind};5;{_rgb_to_256(red, green, blue)}m'
+    index = _rgb_to_16(red, green, blue)
+    base = (30 if kind == 38 else 40) + (60 if index >= 8 else 0)
+    return f'\x1b[{base + index % 8}m'
+
+
+def fg(red: int, green: int, blue: int, mode: Optional[str] = None) -> str:
+    """Return the escape sequence for a foreground color."""
+    return _color(38, red, green, blue, mode)
+
+
+def bg(red: int, green: int, blue: int, mode: Optional[str] = None) -> str:
+    """Return the escape sequence for a background color."""
+    return _color(48, red, green, blue, mode)
+
+
+COLOR_MODE = detect_color_mode()
+
+
+def styles(mode: Optional[str] = None) -> dict:
+    """Return the UI styles for a color mode.
+
+    The RGB values are the exact true-color styles from rosmon's UI; its packed
+    0xBBGGRR values 0x404000, 0x606000, and 0xC8C8C8 become the RGB values below.
+    """
+    return {
+        'BAR': bg(0, 64, 64, mode) + fg(255, 255, 255, mode),
+        'BAR_KEY': bg(0, 96, 96, mode) + fg(255, 255, 255, mode),
+        'RUNNING': fg(0, 0, 0, mode) + bg(24, 178, 24, mode),
+        'CRASHED': fg(0, 0, 0, mode) + bg(178, 24, 24, mode),
+        'PARTIAL': fg(0, 0, 0, mode) + bg(200, 200, 0, mode),
+        'WAITING': fg(0, 0, 0, mode) + bg(178, 104, 24, mode),
+        'IDLE': fg(255, 255, 255, mode) + bg(0, 0, 0, mode),
+        'NODE_SELECTED': fg(0, 0, 0, mode) + bg(135, 206, 250, mode),
+        'SEARCH_SELECTED': fg(0, 0, 0, mode) + bg(0, 178, 178, mode),
+        'KEY': fg(0, 0, 0, mode) + bg(200, 200, 200, mode),
+        'MUTED_KEY': fg(255, 255, 255, mode) + bg(165, 0, 0, mode),
+        'SEPARATOR': fg(0, 64, 64, mode),
+        'LABEL_NO_COLOR': fg(178, 178, 178, mode),
+        'LABEL_TEXT': fg(255, 255, 255, mode),
+    }
+
+
+_STYLES = styles(COLOR_MODE)
+
 
 def _hsluv_label_color(hue: float):
     """Return rosmon's HSLuv(H, 100, 20) process-label color."""
@@ -77,19 +181,18 @@ class TerminalUI:
     REDRAW_INTERVAL = 1.0 / 30.0
     RESIZE_REDRAW_DELAY = 0.10
     RESET = '\x1b[0m'
-    # Exact true-color styles from rosmon's UI. Its packed 0xBBGGRR values
-    # 0x404000, 0x606000, and 0xC8C8C8 become the RGB values below.
-    BAR = '\x1b[48;2;0;64;64m\x1b[38;2;255;255;255m'
-    BAR_KEY = '\x1b[48;2;0;96;96m\x1b[38;2;255;255;255m'
-    RUNNING = '\x1b[38;2;0;0;0m\x1b[48;2;24;178;24m'
-    CRASHED = '\x1b[38;2;0;0;0m\x1b[48;2;178;24;24m'
-    PARTIAL = '\x1b[38;2;0;0;0m\x1b[48;2;200;200;0m'
-    WAITING = '\x1b[38;2;0;0;0m\x1b[48;2;178;104;24m'
-    IDLE = '\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m'
-    NODE_SELECTED = '\x1b[38;2;0;0;0m\x1b[48;2;135;206;250m'
-    SEARCH_SELECTED = '\x1b[38;2;0;0;0m\x1b[48;2;0;178;178m'
-    KEY = '\x1b[38;2;0;0;0m\x1b[48;2;200;200;200m'
-    MUTED_KEY = '\x1b[38;2;255;255;255m\x1b[48;2;165;0;0m'
+    # Styles for the detected color mode, see styles() and detect_color_mode().
+    BAR = _STYLES['BAR']
+    BAR_KEY = _STYLES['BAR_KEY']
+    RUNNING = _STYLES['RUNNING']
+    CRASHED = _STYLES['CRASHED']
+    PARTIAL = _STYLES['PARTIAL']
+    WAITING = _STYLES['WAITING']
+    IDLE = _STYLES['IDLE']
+    NODE_SELECTED = _STYLES['NODE_SELECTED']
+    SEARCH_SELECTED = _STYLES['SEARCH_SELECTED']
+    KEY = _STYLES['KEY']
+    MUTED_KEY = _STYLES['MUTED_KEY']
 
     def __init__(self, enabled: bool, on_key: Callable[[str], None],
                  output_enabled: bool = True):
@@ -351,13 +454,10 @@ class TerminalUI:
         label = self._plain_label(source, width)
         background = self._label_colors.get(source)
         if background is None:
-            styled = '\x1b[38;2;178;178;178m' + label + self.RESET
+            styled = _STYLES['LABEL_NO_COLOR'] + label + self.RESET
         else:
             red, green, blue = background
-            styled = (
-                f'\x1b[48;2;{red};{green};{blue}m'
-                '\x1b[38;2;255;255;255m' + label + self.RESET
-            )
+            styled = bg(red, green, blue) + _STYLES['LABEL_TEXT'] + label + self.RESET
         self._styled_labels[key] = styled
         return styled
 
@@ -424,7 +524,7 @@ class TerminalUI:
         if self._render_cache_key == render_key:
             self._draw_status_lines(self._render_cache_lines, prefix=erase)
             return
-        sep = '\x1b[38;2;0;64;64m' + ('▂' * columns) + self.RESET
+        sep = _STYLES['SEPARATOR'] + ('▂' * columns) + self.RESET
         showing_namespaces = self.namespace_mode and self.namespace_inspect is None
         if self.search_active:
             menu = self.BAR + f' Searching for: {self.search_query}'
