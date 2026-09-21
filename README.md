@@ -104,6 +104,42 @@ Select a namespace with its displayed key, then press:
 <details>
 <summary><strong>Advanced usage</strong></summary>
 
+### Hiding a namespace prefix
+
+`mon2 launch --strip-prefix robot ...` (or `ROSMON2_STRIP_PREFIX=robot`) shows
+`/robot/controller_server` as `controller_server` in the terminal UI. It only changes what the
+UI shows: the nodes keep their names, nodes outside the prefix are shown with their full name,
+and control commands accept both forms (`--node controller_server` or
+`--node /robot/controller_server`). If a shortened name would look like another process, the
+full name is shown instead.
+
+### ROS 2 interface
+
+`mon2 launch --ros [--ros-namespace NS] ...` (needs the `rosmon2_msgs` package) offers what
+rosmon 1 had. A session named `devices` in namespace `/robot` gets:
+
+| Name | Type | Purpose |
+| --- | --- | --- |
+| `/robot/rosmon2_devices/start_stop` | `rosmon2_msgs/srv/StartStop` | start, stop, restart, mute or unmute |
+| `/robot/rosmon2_devices/state` | `rosmon2_msgs/msg/State` | state of every node, on every change and once per second |
+
+```bash
+ros2 service call /robot/rosmon2_devices/start_stop rosmon2_msgs/srv/StartStop \
+  "{node: controller_server, action: 3}"     # 1 start, 2 stop, 3 restart, 4 mute, 5 unmute
+ros2 topic echo /robot/rosmon2_devices/state
+```
+
+`node` accepts the full name or the name shown in the UI; if it is empty, `ns` selects every
+node under a namespace prefix. One of them is required. The requests run in the launch event
+loop, the same code path as the terminal keys and the `mon2` commands.
+
+### Terminal colors
+
+The UI detects how many colors the terminal can show: 24-bit true color, the
+256-color palette, or the 16 basic ANSI colors. Inside GNU screen (4.x, which
+can not show 24-bit colors) or tmux, and with `TERM=screen*`, the 256-color
+palette is used. Set `ROSMON2_COLORS=truecolor`, `256`, or `16` to force a mode.
+
 ### Command-line options
 
 Run without the interactive terminal UI:
@@ -140,11 +176,10 @@ mon2 launch --log ./system.log --flush-log my_package system.launch.py
 By default, process output is also written to a timestamped file under
 `/tmp/rosmon2_*.log`. Use `mon2 launch --help` to see every option.
 
-### Agent control and JSON output
+### Session control and JSON output
 
 Every launch creates a private local Unix-socket session. Name the session so
-another terminal, a script, or a coding agent can inspect and control the same
-supervisor:
+another terminal or a script can inspect and control the same supervisor:
 
 ```bash
 # Terminal 1
@@ -198,81 +233,15 @@ actions, and structured log records. `mon2 events --session hardware` can
 subscribe to the same stream from another process. Use `--no-control` only
 when no external session socket is wanted.
 
-The TUI, JSON CLI, and MCP server all use the same supervisor:
+The TUI and the JSON CLI use the same supervisor:
 
 ```text
 ROS 2 launch processes
           |
     rosmon2 supervisor
-      /       |       \
-    TUI   JSON CLI   MCP server
+        /       \
+     TUI      JSON CLI
 ```
-
-</details>
-
-<details>
-<summary><strong>MCP usage</strong></summary>
-
-### MCP integration
-
-`rosmon2-mcp` is a dependency-free MCP stdio server implementing protocol
-revision `2025-06-18`. It exposes these tools:
-
-- `rosmon2_status`, `rosmon2_logs`, and `rosmon2_wait`
-- `rosmon2_start`, `rosmon2_stop`, and `rosmon2_restart`
-- `rosmon2_mute` and `rosmon2_unmute`
-
-After building the workspace, register it with Codex from the workspace root.
-The explicit setup and runtime paths let Codex use the server when it is
-started from another repository:
-
-```bash
-rosmon2_setup="$(realpath install/setup.bash)"
-if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
-  rosmon2_runtime_dir="$XDG_RUNTIME_DIR/rosmon2"
-else
-  rosmon2_runtime_dir="/tmp/rosmon2-$UID"
-fi
-
-codex mcp add rosmon2 \
-  --env ROSMON2_SETUP="$rosmon2_setup" \
-  --env ROSMON2_RUNTIME_DIR="$rosmon2_runtime_dir" \
-  -- bash -lc 'source "$ROSMON2_SETUP" && exec rosmon2-mcp'
-codex mcp list
-```
-
-If `rosmon2` was registered previously with only
-`codex mcp add rosmon2 -- rosmon2-mcp`, remove that entry with
-`codex mcp remove rosmon2` before registering it again.
-
-### Test with Codex CLI
-
-Start a named rosmon2 session in one terminal:
-
-```bash
-source install/setup.bash
-mon2 launch --session demo rosmon2 demo.launch.py
-```
-
-In a second terminal, from any workspace, ask Codex to inspect the session
-through MCP:
-
-```bash
-codex exec \
-  'Use the rosmon2 MCP server to inspect session "demo". Call rosmon2_status and summarize which processes are running.'
-```
-
-Codex should call the read-only `rosmon2_status` tool with
-`{"session": "demo"}` and report the demo processes. To test interactively,
-run `codex`, enter `/mcp` to confirm that `rosmon2` is active, and then enter
-the same request.
-
-The MCP process does not launch or own ROS nodes. It translates typed MCP tool
-calls into requests to the named rosmon2 session, so closing the MCP client
-does not stop the robot launch. Start rosmon2 with `--session hardware`, then
-pass `"session": "hardware"` to the tools. Read-only MCP tools are annotated
-accordingly, while start/stop/restart/mute operations require an explicit
-node, namespace, or `all: true` target.
 
 </details>
 
