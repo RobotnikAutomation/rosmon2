@@ -30,6 +30,14 @@ class ProcessRecord:
     manually_stopped: bool = False
     restart_count: int = 0
     return_code: Optional[int] = None
+    # Fully qualified name without the leading slash. It identifies the process
+    # (control requests, JSON output, logs); display_name is what the UI shows,
+    # which can be shorter when a namespace prefix is stripped.
+    full_name: str = ''
+
+    def __post_init__(self):
+        if not self.full_name:
+            self.full_name = self.display_name
 
 
 def selection_key(index: int) -> Optional[str]:

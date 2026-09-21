@@ -62,6 +62,19 @@ def make_parser() -> argparse.ArgumentParser:
                                help="discover processes but don't leave them running")
     launch_parser.add_argument('--stop-timeout', type=float, default=5.0, metavar='SECONDS')
     launch_parser.add_argument(
+        '--ros', action='store_true',
+        help='offer a ROS 2 start/stop service and a state topic '
+             '(needs the rosmon2_msgs package)')
+    launch_parser.add_argument(
+        '--ros-namespace', metavar='NAMESPACE',
+        default=os.environ.get('ROSMON2_ROS_NAMESPACE', ''),
+        help='namespace of the ROS interface (default: ROSMON2_ROS_NAMESPACE or root)')
+    launch_parser.add_argument(
+        '--strip-prefix', action='append', metavar='NAMESPACE',
+        help='hide this namespace prefix in the UI, e.g. "robot" shows /robot/x as x '
+             '(repeatable, also comma-separated in ROSMON2_STRIP_PREFIX). Nodes outside '
+             'the prefix keep their full name; commands accept both forms')
+    launch_parser.add_argument(
         '--disable-diagnostics', action='store_true', help=argparse.SUPPRESS)
     launch_parser.add_argument('--diagnostics-prefix', help=argparse.SUPPRESS)
     launch_parser.add_argument('--cpu-limit', help=argparse.SUPPRESS)
@@ -206,6 +219,9 @@ def main(argv=None) -> int:
         session=args.session,
         json_events=args.json_events,
         control=not args.no_control,
+        strip_prefixes=_strip_prefixes(args),
+        ros_interface=args.ros,
+        ros_namespace=args.ros_namespace,
     )
     try:
         return asyncio.run(_run_supervisor(supervisor))
@@ -217,6 +233,12 @@ def main(argv=None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
+
+
+def _strip_prefixes(args):
+    prefixes = list(args.strip_prefix or [])
+    prefixes += os.environ.get('ROSMON2_STRIP_PREFIX', '').split(',')
+    return [prefix.strip() for prefix in prefixes if prefix.strip()]
 
 
 def _target_request(args):

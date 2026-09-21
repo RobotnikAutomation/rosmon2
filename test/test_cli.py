@@ -33,3 +33,13 @@ def test_rosmon_console_format_uses_function_and_respects_override(monkeypatch):
     monkeypatch.setenv('RCUTILS_CONSOLE_OUTPUT_FORMAT', '{message}')
     configure_ros_console_output()
     assert os.environ['RCUTILS_CONSOLE_OUTPUT_FORMAT'] == '{message}'
+
+
+def test_strip_prefix_from_option_and_environment(monkeypatch):
+    import argparse
+    from rosmon2.cli import _strip_prefixes
+
+    monkeypatch.setenv('ROSMON2_STRIP_PREFIX', 'b, c,')
+    assert _strip_prefixes(argparse.Namespace(strip_prefix=['a'])) == ['a', 'b', 'c']
+    monkeypatch.delenv('ROSMON2_STRIP_PREFIX')
+    assert _strip_prefixes(argparse.Namespace(strip_prefix=None)) == []

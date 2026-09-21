@@ -7,7 +7,7 @@ import sys
 import time
 from collections import deque
 from datetime import datetime, timezone
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 import launch
 from launch import LaunchDescription, LaunchService
@@ -48,7 +48,9 @@ class Supervisor:
                  no_start: bool = False, stop_timeout: float = 5.0,
                  log_file: Optional[str] = None, flush_log: bool = False,
                  flush_stdout: bool = False, session: str = 'default',
-                 json_events: bool = False, control: bool = True):
+                 json_events: bool = False, control: bool = True,
+                 strip_prefixes=(), ros_interface: bool = False,
+                 ros_namespace: str = ''):
         self.launch_file = launch_file
         self.launch_arguments = list(launch_arguments)
         self.no_start = no_start
@@ -56,6 +58,12 @@ class Supervisor:
         self.flush_stdout = flush_stdout
         self.session = session
         self.json_events = json_events
+        self.strip_prefixes = tuple(
+            prefix.strip('/') for prefix in strip_prefixes if prefix.strip('/'))
+        self.ros_interface = ros_interface
+        self.ros_namespace = ros_namespace
+        self._ros = None
+        self._ros_task = None
         self.records = []
         self._by_action: Dict[object, ProcessRecord] = {}
         self._next_key = 0
@@ -117,6 +125,10 @@ class Supervisor:
                 socket=str(self._control_server.path) if self._control_server else None,
             )
             session_started = True
+            if self.ros_interface:
+                # Started in the background: rclpy takes a moment to come up and the
+                # launch must not wait for it.
+                self._ros_task = asyncio.ensure_future(self._start_ros_interface(loop))
             # A monitor must remain available after every process is stopped;
             # otherwise F6 / per-node start could never bring them back.
             return await self._launch_service.run_async(shutdown_when_idle=False)
@@ -126,10 +138,37 @@ class Supervisor:
             if screen_handler is not None and original_stream is not None:
                 screen_handler.setStream(original_stream)
             self.ui.close(loop)
+            if self._ros_task is not None:
+                self._ros_task.cancel()
+            if self._ros is not None:
+                await loop.run_in_executor(None, self._ros.stop)
             if self._control_server is not None and control_started:
                 await self._control_server.close()
             if self._log_handle:
                 self._log_handle.close()
+
+    async def _start_ros_interface(self, loop) -> None:
+        from .ros_interface import RosInterface
+        interface = RosInterface(self, loop, self.session, self.ros_namespace)
+        self._ros = interface
+        if await loop.run_in_executor(None, interface.start):
+            self.add_event_listener(self._on_ros_event)
+            self._emit_event('ros_interface_started', service=interface.service_name,
+                             topic=interface.topic_name)
+        else:
+            self._emit_event('ros_interface_failed', reason=interface.error)
+            self.ui.log('rosmon2', f'ROS interface disabled: {interface.error}',
+                        is_stderr=True)
+            self._ros = None
+
+    def _on_ros_event(self, event: Dict) -> None:
+        if self._ros is not None and event['event'] in (
+                'node_started', 'node_exited', 'control_action'):
+            self._ros.notify_change()
+
+    def snapshot(self) -> List[Dict]:
+        """Return every process as a dict; call it from the launch event loop."""
+        return [self._record_dict(record) for record in self.records]
 
     async def shutdown(self) -> None:
         if self._shutting_down:
@@ -159,7 +198,7 @@ class Supervisor:
         record.state = State.RUNNING
         self._by_action[event.action] = record
         self._silence_native_process_screen_logger(event.process_name)
-        self._write_log(record.display_name, f'process started with pid {event.pid}', False)
+        self._write_log(record.full_name, f'process started with pid {event.pid}', False)
         self._emit_event('node_started', node=self._record_dict(record))
         if self.no_start and record.key not in self._no_start_applied:
             self._no_start_applied.add(record.key)
@@ -172,10 +211,32 @@ class Supervisor:
         if linked is not None:
             self._by_action[event.action] = linked
             return linked
-        display = self._display_name(event.action, event.process_name)
-        record = ProcessRecord(key=self._next_key, display_name=display)
+        full_name = self._display_name(event.action, event.process_name)
+        record = ProcessRecord(
+            key=self._next_key, display_name=self._label_for(full_name), full_name=full_name)
         self._next_key += 1
         return record
+
+    def _label_for(self, full_name: str) -> str:
+        """Return the name shown in the UI: the full name without a stripped prefix.
+
+        Processes outside the configured prefixes keep their full name. If the
+        shortened name is already used by another process (for example /robot/x
+        and /x) the full name is used, with a leading slash when even that is
+        taken, so every process stays visible and distinguishable.
+        """
+        label = full_name
+        for prefix in self.strip_prefixes:
+            head = prefix + '/'
+            if full_name.startswith(head) and len(full_name) > len(head):
+                label = full_name[len(head):]
+                break
+        taken = {record.display_name for record in self.records}
+        if label in taken:
+            label = full_name
+        if label in taken:
+            label = '/' + full_name
+        return label
 
     @staticmethod
     def _display_name(action, fallback: str) -> str:
@@ -220,9 +281,10 @@ class Supervisor:
     def _on_output(self, event, is_stderr: bool):
         record = self._by_action.get(event.action)
         source = record.display_name if record else event.process_name
+        full_name = record.full_name if record else event.process_name
         text = event.text.decode(errors='replace')
-        self._write_log(source, text.rstrip('\n'), is_stderr)
-        self._record_output(source, text, is_stderr)
+        self._write_log(full_name, text.rstrip('\n'), is_stderr)
+        self._record_output(full_name, text, is_stderr)
         if record is None or not record.muted:
             self.ui.log(source, text, is_stderr=is_stderr)
         if self.flush_stdout:
@@ -245,7 +307,7 @@ class Supervisor:
             record.state = State.IDLE
         else:
             record.state = State.CRASHED
-        self._write_log(record.display_name,
+        self._write_log(record.full_name,
                         f'process exited with code {event.returncode}', event.returncode != 0)
         self._emit_event('node_exited', node=self._record_dict(record))
         self.ui.set_records(self.records)
@@ -506,13 +568,14 @@ class Supervisor:
 
     @staticmethod
     def _namespace_for(record: ProcessRecord) -> str:
-        parts = [part for part in record.display_name.strip('/').split('/') if part]
+        parts = [part for part in record.full_name.strip('/').split('/') if part]
         return parts[0] if len(parts) > 1 else '/'
 
     def _record_dict(self, record: ProcessRecord) -> Dict:
         return {
             'key': record.key,
-            'name': '/' + record.display_name.lstrip('/'),
+            'name': '/' + record.full_name.lstrip('/'),
+            'label': record.display_name,
             'namespace': self._namespace_for(record),
             'state': record.state.value,
             'pid': record.pid,
@@ -529,7 +592,11 @@ class Supervisor:
         selected = list(self.records)
         if node:
             normalized = str(node).lstrip('/')
-            selected = [
+            # The full name wins; the name shown in the UI (without a stripped
+            # prefix) is accepted too, so what you see is what you can type.
+            exact = [record for record in selected
+                     if record.full_name.lstrip('/') == normalized]
+            selected = exact or [
                 record for record in selected
                 if record.display_name.lstrip('/') == normalized
             ]
@@ -544,7 +611,8 @@ class Supervisor:
                 prefix = normalized + '/'
                 selected = [
                     record for record in selected
-                    if record.display_name.lstrip('/').startswith(prefix)
+                    if record.full_name.lstrip('/').startswith(prefix)
+                    or record.display_name.lstrip('/').startswith(prefix)
                 ]
         elif not all_nodes:
             if strict:
@@ -592,7 +660,7 @@ class Supervisor:
         selected_names = None
         if any(request.get(field) for field in ('node', 'namespace')):
             selected_names = {
-                record.display_name.lstrip('/')
+                record.full_name.lstrip('/')
                 for record in self._selected_records(request)
             }
         severity = request.get('severity')
