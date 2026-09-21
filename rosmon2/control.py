@@ -1,4 +1,4 @@
-"""Local Unix-socket transport shared by rosmon2's CLI and MCP adapter."""
+"""Local Unix-socket transport used by rosmon2's CLI."""
 
 import asyncio
 import json
@@ -50,7 +50,7 @@ def _encoded(message: Dict) -> bytes:
 
 
 class ControlClient:
-    """Synchronous client used by short-lived CLI and MCP commands."""
+    """Synchronous client used by short-lived CLI commands."""
 
     def __init__(self, session: str = 'default', timeout: float = 10.0):
         self.session = validate_session_name(session)
