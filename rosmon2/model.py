@@ -38,6 +38,7 @@ class ProcessRecord:
     def __post_init__(self):
         if not self.full_name:
             self.full_name = self.display_name
+    agent_created: bool = False
 
 
 def selection_key(index: int) -> Optional[str]:

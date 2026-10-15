@@ -16,7 +16,7 @@ Every node with its state in color, and stop, start, restart and mute nodes from
 <details>
 <summary><b>What differs from the original rosmon2</b></summary>
 
-The fork starts from commit `578ea91` (2026-07-24), which is **before** an embedded AI agent was added, and adds:
+The fork branched from commit `578ea91` (2026-07-24) and later merged the upstream Agent and Diagnosis panels (`F2`/`F3`/`F4`, optional, see below). On top of upstream it adds:
 
 | Change | Why |
 | --- | --- |
@@ -163,8 +163,19 @@ Pick a node with its letter and press a key:
 | `k` | stop | | `F5` | group by namespace |
 | `m` / `u` | mute / unmute | | `F6` / `F7` | start / stop all |
 | `d` | start under `gdb` | | `Ctrl-C` | stop the group |
+| | | | `F3` / `F4` | Diagnosis / Agent (optional) |
 
 Colors: **green** running · **red** exited with an error · **orange** starting · **black** stopped.
+
+<details>
+<summary><b>Diagnosis and Agent (optional, upstream)</b></summary>
+
+`F3` opens **Diagnosis** (unhealthy nodes and a hint of what may be wrong) and `F4` the embedded **Agent**; `F2` picks the model and permissions. Both need the [Codex CLI](https://learn.chatgpt.com/docs/non-interactive-mode) installed and logged in; without it, nothing changes and the rest of rosmon2 works the same. Use `--codex-command PATH` and `--codex-workspace PATH` to point them elsewhere.
+
+![Diagnosis](docs/diagnosis.png)
+![Agent](docs/agent.png)
+
+</details>
 
 ### From ROS 2
 
