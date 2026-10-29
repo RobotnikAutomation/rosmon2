@@ -5,7 +5,7 @@ from setuptools import find_packages, setup
 
 
 package_name = 'rosmon2'
-project_root = Path(__file__).parent
+project_root = Path(__file__).resolve().parent
 long_description = (project_root / 'README.md').read_text(encoding='utf-8')
 package_version = (
     ElementTree.parse(project_root / 'package.xml').getroot().findtext('version')
