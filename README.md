@@ -10,7 +10,7 @@ Every node with its state in color, and stop, start, restart and mute nodes from
 - Launches **any launch file** (`.launch.py`, XML, YAML) with the native `ros2 launch` engine: **no launch file, node or parameter has to change**.
 - One node per line, **colored by state**, with keys to act on it.
 - Control from ROS 2 (`ros2 service call ...`), like in rosmon 1.
-- Plugs into `bringup.sh` with one variable and one function: any group can move to rosmon2, or back to `ros2 launch`, by editing a list.
+- Replaces `ros2 launch` in `bringup.sh` with one function: ready-made files for each `robot_packages` version in `extras/bringup/`.
 - No external Python dependencies, and no internet access needed on the robot.
 
 <details>
@@ -64,76 +64,57 @@ ros2 interface show rosmon2_msgs/srv/StartStop
 
 ## Configure the bringup
 
-Two files change, and no launch file is modified. Back both up first:
+Every group of `bringup.sh` is launched with `mon2`; if `mon2` is not installed, it warns and uses `ros2 launch`, so the robot still starts. There is nothing to configure in `bringup.env`, and no launch file changes.
+
+| `robot_packages` | What to do |
+| --- | --- |
+| **jazzy-1.7 or later** | Nothing: `bringup.sh` already includes it, and `rosmon2` comes as a submodule |
+| **jazzy-1.5, jazzy-1.6** | Copy [`extras/bringup/bringup_jazzy-1.5_1.6.sh`](extras/bringup/bringup_jazzy-1.5_1.6.sh) |
+| **jazzy-1.4** | Copy [`extras/bringup/bringup_jazzy-1.4.sh`](extras/bringup/bringup_jazzy-1.4.sh) |
 
 ```bash
 cp ~/bringup.sh ~/bringup.sh.bak
-cp ~/robot_settings/robot_params/bringup.env ~/robot_settings/robot_params/bringup.env.bak
+cp ~/robot_ws/src/rosmon2/extras/bringup/bringup_jazzy-1.5_1.6.sh ~/bringup.sh   # the file of your version
 ```
 
-> `configure_bringup.sh` **overwrites** `~/bringup.sh` and `~/ros_config.sh` with the ones in `robot_packages`. For these changes to survive, also apply them to `scripts/bringup.sh` and `settings/robot_params/bringup.env` in that repo.
+To go back: `cp ~/bringup.sh.bak ~/bringup.sh`.
 
-### 1. `bringup.env`: which groups use rosmon2
+> `configure_bringup.sh` **overwrites** `~/bringup.sh` with the one in `robot_packages`. On jazzy-1.6 or earlier, copy the file again after running it.
 
-In `~/robot_settings/robot_params/bringup.env`, next to the `ROBOT_RUN_*` variables, add:
+The version of a robot is `ROBOT_PACKAGES_VERSION` in `~/robot_settings/robot_params/bringup.env`. If your `bringup.sh` was edited by hand, do not overwrite it: apply the two changes below instead.
 
-```bash
-export ROBOT_ROSMON2_GROUPS="base devices localization perception navigation manipulation behavior hmi"
-```
+### What changes in `bringup.sh`
 
-The groups in the list are launched with rosmon2; the others with `ros2 launch`, as always. Use a subset (`"hmi perception"`) to start with fewer, or `""` to turn it all off.
+Those files are the original `bringup.sh` of each version with only two changes:
 
-> All the groups of the reference bringup have been tested with rosmon2. If your bringup differs, add groups one by one and **leave `base` (motors) for last**.
-
-### 2. `bringup.sh`: one function, and replace the group lines
-
-**1)** Paste this function **before the first time a group is launched**: in the reference bringup, right before `if $ROBOT_RUN_SIMULATION` (after the `zenoh_router` and `discovery_server` blocks). It uses `echo_warning`, which `bringup.sh` already defines.
+**1)** This function, right before `if $ROBOT_RUN_SIMULATION`:
 
 ```bash
 function launch_group() {
   local group="$1" launch_file="$2"
   local robot_id="${ROBOT_ID:-robot}"
-  if [[ " $ROBOT_ROSMON2_GROUPS " == *" $group "* ]]; then
-    if command -v mon2 > /dev/null 2>&1; then
-      screen -S $group -d -m mon2 launch --session $group --strip-prefix $robot_id --ros --ros-namespace $robot_id $ROBOT_BRINGUP_PACKAGE $launch_file
-      return
-    fi
+  if command -v mon2 > /dev/null 2>&1; then
+    screen -S "$group" -d -m mon2 launch --session "$group" --strip-prefix "$robot_id" \
+      --ros --ros-namespace "$robot_id" "$ROBOT_BRINGUP_PACKAGE" "$launch_file"
+  else
     echo_warning "--> $group: mon2 (rosmon2) not found, launching it with ros2 launch"
+    screen -S "$group" -d -m ros2 launch "$ROBOT_BRINGUP_PACKAGE" "$launch_file"
   fi
-  screen -S $group -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE $launch_file
 }
 ```
 
-**2)** Replace every `screen -S <group> ... ros2 launch ...` line with a call to the function (`grep -n "screen -S" ~/bringup.sh` finds them). The rest of each block (`echo_success`, `sleep`) does not change:
+**2)** Every `screen -S <group> ... ros2 launch ...` line becomes a call to it (`grep -n "screen -S" ~/bringup.sh` finds them). The rest of each block (`echo_success`, `sleep`) does not change:
 
 ```diff
 -  screen -S base -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE $ROBOT_BRINGUP_LAUNCH;
-+  launch_group base $ROBOT_BRINGUP_LAUNCH
--  screen -S devices -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE devices_complete.launch.py;
-+  launch_group devices devices_complete.launch.py
--  screen -S localization -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE localization_complete.launch.py;
-+  launch_group localization localization_complete.launch.py
--  screen -S perception -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE perception_complete.launch.py;
-+  launch_group perception perception_complete.launch.py
++  launch_group base "$ROBOT_BRINGUP_LAUNCH"
 -  screen -S navigation -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE navigation_complete.launch.py;
 +  launch_group navigation navigation_complete.launch.py
--  screen -S manipulation -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE manipulation_complete.launch.py;
-+  launch_group manipulation manipulation_complete.launch.py
--  screen -S behavior -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE behavior_complete.launch.py;
-+  launch_group behavior behavior_complete.launch.py
--  screen -S hmi -d -m ros2 launch $ROBOT_BRINGUP_PACKAGE hmi_complete.launch.py;
-+  launch_group hmi hmi_complete.launch.py
 ```
-
-What the function does:
-
-- A group **not** in `ROBOT_ROSMON2_GROUPS` runs the same `ros2 launch` as before, so it is safe to replace all lines even if rosmon2 is only used for some.
-- A group in the list, but with `mon2` not installed, prints a warning and uses `ros2 launch`: the robot still starts.
-- A group in the list with `mon2` available runs `mon2 launch`, hiding the robot prefix in the screen and offering the ROS 2 service and topic.
 
 The prefix and the namespace come from `ROBOT_ID` (default `robot`). If in your bringup the namespace comes from another variable, change the `local robot_id=...` line. The initial `killall screen` needs no change: when a screen is closed, `mon2` and its nodes go with it, leaving no orphans.
 
-### 3. Check
+### Check
 
 Relaunch the bringup, then:
 
